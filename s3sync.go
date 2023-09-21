@@ -3,7 +3,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,7 +14,11 @@ package s3sync
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -67,6 +71,7 @@ type fileInfo struct {
 	lastModified   time.Time
 	singleFile     bool
 	existsInSource bool
+	md5            string
 }
 
 type fileOp struct {
@@ -467,6 +472,7 @@ func (m *Manager) listS3FileWithToken(ctx context.Context, c chan *fileInfo, pat
 				path:         filepath.Dir(*object.Key),
 				size:         *object.Size,
 				lastModified: *object.LastModified,
+				md5:          *object.ETag,
 				singleFile:   true,
 			}
 		} else {
@@ -475,6 +481,7 @@ func (m *Manager) listS3FileWithToken(ctx context.Context, c chan *fileInfo, pat
 				path:         *object.Key,
 				size:         *object.Size,
 				lastModified: *object.LastModified,
+				md5:          *object.ETag,
 			}
 		}
 		select {
@@ -556,11 +563,32 @@ func sendFileInfoToChannel(ctx context.Context, c chan *fileInfo, basePath, path
 		size:         stat.Size(),
 		lastModified: stat.ModTime(),
 		singleFile:   singleFile,
+		md5:          "",
 	}
+	fileMD5, _ := calculateMD5(path)
+	fi.md5 = fileMD5
 	select {
 	case c <- fi:
 	case <-ctx.Done():
 	}
+}
+
+func calculateMD5(filePath string) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		fmt.Printf("failed to open file %s: %v \n", filePath, err.Error())
+		return "", err
+	}
+	defer file.Close()
+
+	hash := md5.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		fmt.Printf("failed to calculate md5 for file %s: %v \n", filePath, err.Error())
+		return "", err
+	}
+
+	hashInBytes := hash.Sum(nil)[:16]
+	return hex.EncodeToString(hashInBytes), nil
 }
 
 func sendErrorInfoToChannel(ctx context.Context, c chan *fileInfo, err error) {
@@ -592,7 +620,12 @@ func filterFilesForSync(sourceFileChan, destFileChan chan *fileInfo, del bool) c
 			// 1. The dest doesn't exist
 			// 2. The dest doesn't have the same size as the source
 			// 3. The dest is older than the source
-			if !ok || sourceInfo.size != destInfo.size || sourceInfo.lastModified.After(destInfo.lastModified) {
+			// if !ok || sourceInfo.size != destInfo.size || sourceInfo.lastModified.After(destInfo.lastModified) {
+			// 	c <- &fileOp{fileInfo: sourceInfo}
+			// }
+
+			//Using MD5 values to compare files for consistency
+			if !ok || sourceInfo.md5 != destInfo.md5 {
 				c <- &fileOp{fileInfo: sourceInfo}
 			}
 			if ok {
