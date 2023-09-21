@@ -16,6 +16,7 @@ import (
   "github.com/seqsense/s3sync"
 )
 
+
 func main() {
   // Creates an AWS session
   sess, _ := session.NewSession(&aws.Config{
